@@ -1,10 +1,17 @@
 # Gracious Feature Flag Bundle
 
-Lightweight feature flags for Symfony. Define flags in config and check them from
-services, controllers, Twig, routes, and controller attributes. Supports one default
-manager plus multiple named managers, and a read-only REST endpoint.
+Lightweight feature flags for Symfony. Define flags in config, then check them from
+services, controllers, Twig, routes, and controller attributes.
 
-- Symfony `^7.0 || ^8.0`, PHP `>=8.3`.
+- PHP `>=8.3`, Symfony `^7.0 || ^8.0`, Twig 3 (optional).
+
+**Features**
+
+- Config-driven flags with optional descriptions.
+- One default manager plus any number of named managers (separate flag groups).
+- Check flags in PHP, Twig, route defaults, or `#[RequireFeature]` attributes.
+- Per-process runtime overrides (`enable` / `disable` / `reset`).
+- Optional read-only REST endpoint with a kill switch.
 
 ## Installation
 
@@ -12,16 +19,17 @@ manager plus multiple named managers, and a read-only REST endpoint.
 composer require gracious/feature-flag-bundle
 ```
 
-If you do not use Symfony Flex, register the bundle in `config/bundles.php`:
+With Symfony Flex this is all you need. Without Flex, register the bundle manually:
 
 ```php
+// config/bundles.php
 return [
     // ...
     Gracious\FeatureFlagBundle\GraciousFeatureFlagBundle::class => ['all' => true],
 ];
 ```
 
-## Configuration
+## Quick start
 
 ```yaml
 # config/packages/gracious_feature_flag.yaml
@@ -31,24 +39,8 @@ gracious_feature_flag:
             enabled: true
             description: 'New checkout flow'
         beta_search:
-            enabled: false
-
-    # optional: separate groups of flags
-    managers:
-        billing:
-            flags:
-                invoices_v2: { enabled: true }
-
-    # optional: customise the exception thrown by guards
-    exception:
-        class: Gracious\FeatureFlagBundle\Exception\FeatureNotAvailableException
-        status_code: 404
-        factory: ~   # service id implementing ExceptionFactoryInterface (takes precedence)
+            enabled: false   # 'enabled' defaults to false
 ```
-
-## Service usage
-
-The default manager is autowired via `FeatureFlagManagerInterface`:
 
 ```php
 use Gracious\FeatureFlagBundle\Flag\FeatureFlagManagerInterface;
@@ -60,49 +52,94 @@ final class CheckoutService
     public function run(): void
     {
         if ($this->flags->isEnabled('new_checkout')) {
-            // ...
+            // new flow
         }
     }
 }
 ```
 
-Named managers autowire by variable name (`<name>Manager`):
+## Configuration
+
+```yaml
+gracious_feature_flag:
+    # default manager flags
+    flags:
+        new_checkout: { enabled: true, description: 'New checkout flow' }
+        beta_search:  { enabled: false }
+
+    # optional: extra named managers, each its own flag group
+    managers:
+        billing:
+            flags:
+                invoices_v2: { enabled: true }
+
+    # optional: exception thrown when a guard fails (route / attribute)
+    exception:
+        class: Gracious\FeatureFlagBundle\Exception\FeatureNotAvailableException
+        status_code: 404
+        factory: ~       # service id implementing ExceptionFactoryInterface; wins over 'class'
+
+    # optional: REST endpoint kill switch
+    api:
+        enabled: true    # false => endpoints return 404
+```
+
+## Manager API
+
+```php
+$flags->isEnabled('new_checkout'); // bool
+$flags->has('new_checkout');       // bool: flag is defined
+$flags->get('new_checkout');       // Flag VO (name, enabled, description)
+$flags->all();                     // array<string, Flag>
+
+// runtime overrides (this PHP process only; see Limitations)
+$flags->enable('beta_search');
+$flags->disable('new_checkout');
+$flags->reset('beta_search');      // back to the configured value
+```
+
+Unknown flag names throw `UnknownFeatureException`.
+
+### Named managers
+
+Each named manager is its own service. Autowire it by the variable name `<name>Manager`:
 
 ```php
 public function __construct(FeatureFlagManagerInterface $billingManager) {}
 ```
 
-Manager API:
+To resolve a manager by name at runtime, inject the `ManagerRegistry`:
 
 ```php
-$flags->isEnabled('new_checkout'); // bool
-$flags->has('new_checkout');       // bool
-$flags->get('new_checkout');       // Flag value object
-$flags->all();                     // array<string, Flag>
+use Gracious\FeatureFlagBundle\Flag\ManagerRegistry;
 
-// runtime overrides (per PHP process; not shared across workers)
-$flags->enable('beta_search');
-$flags->disable('new_checkout');
-$flags->reset('beta_search');      // back to configured value
+public function __construct(private ManagerRegistry $registry) {}
+
+$this->registry->get('billing')->isEnabled('invoices_v2');
+$this->registry->getDefault()->isEnabled('new_checkout');
 ```
 
-## Twig usage
+Unknown manager names throw `UnknownManagerException`.
+
+## Twig
 
 ```twig
 {% if feature('new_checkout') %}
     <a href="/checkout/new">Try the new checkout</a>
 {% endif %}
 
-{# named manager #}
+{# named manager (second argument) #}
 {% if feature('invoices_v2', 'billing') %} ... {% endif %}
 
 {# as a test #}
 {% if 'beta_search' is feature_enabled %} ... {% endif %}
 ```
 
-## Routing restrictions
+The Twig extension registers only when Twig is installed.
 
-Guard a route with the `_feature_flag` default. String form requires the flag enabled:
+## Route guards
+
+Guard a route with the `_feature_flag` default. The string form requires the flag enabled:
 
 ```yaml
 beta_page:
@@ -112,7 +149,7 @@ beta_page:
         _feature_flag: beta_search
 ```
 
-Array form supports the required state and a named manager:
+The array form sets the required state and an optional manager:
 
 ```yaml
 legacy_page:
@@ -124,14 +161,14 @@ legacy_page:
 
 When the requirement is not met, the configured exception is thrown (404 by default).
 
-## Attributes
+## Attribute guards
 
-Use `#[RequireFeature]` on a controller class or method (repeatable):
+`#[RequireFeature]` works on a controller class or method and is repeatable:
 
 ```php
 use Gracious\FeatureFlagBundle\Attribute\RequireFeature;
 
-#[RequireFeature('new_checkout')]                 // require enabled
+#[RequireFeature('new_checkout')]                 // class: require enabled
 final class CheckoutController
 {
     #[RequireFeature('legacy', enabled: false)]   // require disabled
@@ -144,17 +181,18 @@ final class CheckoutController
 
 ## Custom exception
 
-Provide a factory service for full control:
+For full control over the failure response, provide a factory service:
 
 ```php
 use Gracious\FeatureFlagBundle\Exception\ExceptionFactoryInterface;
 use Gracious\FeatureFlagBundle\Flag\Flag;
+use Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException;
 
-final class RedirectExceptionFactory implements ExceptionFactoryInterface
+final class AccessDeniedExceptionFactory implements ExceptionFactoryInterface
 {
     public function create(Flag $flag, bool $required): \Throwable
     {
-        return new \Symfony\Component\HttpKernel\Exception\AccessDeniedHttpException(
+        return new AccessDeniedHttpException(
             sprintf('Feature "%s" gate failed.', $flag->name),
         );
     }
@@ -164,14 +202,15 @@ final class RedirectExceptionFactory implements ExceptionFactoryInterface
 ```yaml
 gracious_feature_flag:
     exception:
-        factory: App\FeatureFlag\RedirectExceptionFactory
+        factory: App\FeatureFlag\AccessDeniedExceptionFactory
 ```
 
-Or set `exception.class` to any class with a `(string $name, int $statusCode)` constructor.
+Alternatively set `exception.class` to any class with a `(string $name, int $statusCode)`
+constructor. A `factory` always wins over `class`.
 
-## API endpoint
+## REST endpoint
 
-The REST endpoint is **opt-in**. Import the routes in your app:
+The endpoint is read-only and opt-in. Import the routes to enable it:
 
 ```yaml
 # config/routes/gracious_feature_flag.yaml
@@ -181,60 +220,24 @@ feature_flags:
     trailing_slash_on_root: false
 ```
 
-`trailing_slash_on_root: false` keeps the list route at `/_feature-flags` (no trailing
-slash), so `GET /_feature-flags` returns `200` directly instead of a `301` redirect to
-`/_feature-flags/`. Omit it only if you prefer the trailing-slash form.
+| Method | Path                     | Description                      |
+|--------|--------------------------|---------------------------------|
+| GET    | `/_feature-flags`        | list all flags (default manager)|
+| GET    | `/_feature-flags/{name}` | read a single flag              |
 
-| Method | Path                       | Description                       |
-|--------|----------------------------|-----------------------------------|
-| GET    | `/_feature-flags`          | list all flags (default manager)  |
-| GET    | `/_feature-flags/{name}`   | read a single flag                |
-
-Both accept `?manager=<name>`. The endpoint is **read-only** — it never toggles flags.
-
-### Disabling the API
-
-The endpoints can be switched off entirely. When disabled, both routes return `404`
-even if you still import them — a hard kill switch independent of routing:
-
-```yaml
-gracious_feature_flag:
-    api:
-        enabled: false   # default: true
-```
+Both accept `?manager=<name>`. Unknown flag or manager returns 404.
 
 ```bash
 curl http://localhost/_feature-flags
 # [{"name":"new_checkout","enabled":true,"description":"New checkout flow"}]
 ```
 
-> **Security:** these endpoints expose flag names and states. The bundle does not protect
-> them. Restrict the prefix to a dev/internal firewall, or guard the import with access
-> control, before exposing it in production.
+`trailing_slash_on_root: false` keeps the list route at `/_feature-flags` so the request
+returns 200 directly instead of a 301 redirect to `/_feature-flags/`.
 
-## Limitations
+**Disabling the endpoint.** Set `api.enabled: false`. Both routes then return 404 even if
+still imported, a hard kill switch independent of routing.
 
-Runtime overrides (`enable`/`disable`/`reset`) live in memory for the current PHP process
-only. They are not persisted or shared across workers/requests. For permanent changes,
-edit the configuration.
-
-## Development
-
-```bash
-composer install
-vendor/bin/phpunit
-vendor/bin/phpstan analyse
-vendor/bin/php-cs-fixer fix --dry-run --diff
-```
-
-### Running with Docker
-
-If you do not have PHP/Composer locally, build the bundled image and run all commands inside it:
-
-```bash
-docker build -t feature-flag-bundle:php83 -f docker/Dockerfile .
-docker run --rm -v "$PWD":/app -w /app feature-flag-bundle:php83 composer install
-docker run --rm -v "$PWD":/app -w /app feature-flag-bundle:php83 vendor/bin/phpunit
-docker run --rm -v "$PWD":/app -w /app feature-flag-bundle:php83 vendor/bin/phpstan analyse
-docker run --rm -v "$PWD":/app -w /app feature-flag-bundle:php83 vendor/bin/php-cs-fixer fix
-```
+> **Security:** these endpoints expose flag names and states and are not protected by the
+> bundle. Restrict the prefix to a dev/internal firewall or guard the import with access
+> control before exposing it in production.

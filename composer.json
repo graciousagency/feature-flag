@@ -1,0 +1,39 @@
+{
+    "name": "gracious/feature-flag-bundle",
+    "description": "Lightweight feature flag management for Symfony applications.",
+    "type": "symfony-bundle",
+    "license": "MIT",
+    "keywords": ["symfony", "bundle", "feature-flag", "feature-toggle"],
+    "require": {
+        "php": ">=8.3",
+        "psr/container": "^1.1 || ^2.0",
+        "symfony/config": "^7.0 || ^8.0",
+        "symfony/dependency-injection": "^7.0 || ^8.0",
+        "symfony/http-foundation": "^7.0 || ^8.0",
+        "symfony/http-kernel": "^7.0 || ^8.0"
+    },
+    "require-dev": {
+        "friendsofphp/php-cs-fixer": "^3.64",
+        "phpstan/phpstan": "^2.0",
+        "phpunit/phpunit": "^11.0",
+        "symfony/browser-kit": "^7.0 || ^8.0",
+        "symfony/css-selector": "^7.0 || ^8.0",
+        "symfony/framework-bundle": "^7.0 || ^8.0",
+        "symfony/routing": "^7.0 || ^8.0",
+        "symfony/twig-bundle": "^7.0 || ^8.0",
+        "symfony/yaml": "^7.0 || ^8.0",
+        "twig/twig": "^3.8"
+    },
+    "autoload": {
+        "psr-4": { "Gracious\\FeatureFlagBundle\\": "src/" }
+    },
+    "autoload-dev": {
+        "psr-4": { "Gracious\\FeatureFlagBundle\\Tests\\": "tests/" }
+    },
+    "config": {
+        "sort-packages": true,
+        "allow-plugins": { "php-http/discovery": false }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
